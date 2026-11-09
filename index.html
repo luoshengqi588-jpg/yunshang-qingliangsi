@@ -1098,16 +1098,19 @@
         /* ============ 礼佛：点按后播放小沙弥三拜视频（竖屏，约12秒，慢而稳），播完记 1 次 ============ */
         var bowVideo = $("bowVideo");
         var bowPoster = $("bowPoster");
+        bowVideo.muted = true; /* 静音与内联再落实一遍：手机浏览器允许自动起播的前提 */
+        bowVideo.playsInline = true;
         var bowing = false;
         var bowStage = 0; /* 已播到第几拜：跟着视频进度走按钮字 */
         var bowChimed = [false, false, false]; /* 三声磬各敲过没有：与按钮切换分开触发 */
         var bowRaf = 0;
-        var bowFrameShown = false; /* 视频第一帧是否已经真正显示出来（封面淡出的唯一时机） */
-        var bowPlaying = false; /* 视频是否真正播起来过：看守判断中途停播的依据 */
-        var bowLastT = 0; /* 上次看到的播放进度：中途断掉时从这里接着播 */
-        var bowLastAdvance = 0; /* 进度上次往前走的时间戳：卡住超时就拉一把 */
-        var bowRecoveries = 0; /* 中途断播已接续的次数：超过上限才认这一拜礼成，不无限重试 */
-        var bowGuard = 0; /* 看守定时器：盯着三拜必须一拜不少地播完 */
+        var bowFrameShown = false; /* 视频第一帧是否已经真正显示出来（封面淡出的时机） */
+        var bowLastT = 0; /* 上次看到的播放进度：磬声与按钮字都跟着它走 */
+        var bowLastAdvance = 0; /* 进度上次往前走的时间戳：看守判断卡住的依据 */
+        var bowLastPlayTry = 0; /* 上次喊 play() 的时间戳：不连着猛喊 */
+        var bowEarlyEnds = 0; /* 半路假报 ended／出错的次数：接续有上限，不无限重播 */
+        var bowGuard = 0; /* 看守定时器：视频停住就再请它播，不许半路收场 */
+        var bowDeadline = 0; /* 这一拜的最晚收场时间：真播不动了也别把按钮一直锁死 */
         /* 三拜额头触到蒲团的时刻（逐帧量过视频：俯身到底分别在 2.3 / 6.05 / 9.9 秒）：
            磬声敲在这里，一声磬对一拜，与磕头同频 */
         var BOW_CHIME_AT = [2.3, 6.05, 9.9];
@@ -1115,7 +1118,6 @@
         function bowFinish() {
           if (!bowing) return;
           bowing = false;
-          bowPlaying = false;
           cancelAnimationFrame(bowRaf);
           if (bowGuard) { clearInterval(bowGuard); bowGuard = 0; }
           bowStage = 0;
@@ -1150,63 +1152,77 @@
           bowTick();
           bowRaf = requestAnimationFrame(bowWatch);
         }
-        /* 中途断播就接续：手机浏览器偶尔会把视频在半路掐停——播完第一拜就停住、或直接报 ended——
-           以前掐停就当礼成收场，看到的只剩一拜。这回盯住进度：没播到片尾不许收场，
-           从断点前一点接着往下播，三拜一拜不少地播完；已敲过的磬不重敲，没敲的按进度补上 */
-        function bowResume() {
+        /* 请视频往前播：只喊 play()，不回跳进度——回跳在手机上容易把解码卡进 seeking 里出不来，
+           画面就冻在封面上，等于一次都没拜。play() 被拒也不放弃，看守会一轮轮再喊 */
+        function bowPlay() {
           if (!bowing) return;
-          if (bowRecoveries >= 5) { bowFinish(); return; }
-          bowRecoveries += 1;
-          bowLastAdvance = Date.now();
-          try { bowVideo.currentTime = Math.max(0, bowLastT - 0.15); } catch (e) { /* 进度还没落定也不拦着续播 */ }
-          var p = bowVideo.play();
-          if (p && p.catch) p.catch(function () { /* 这一把没拉动，等看守下一轮再拉 */ });
+          bowLastPlayTry = Date.now();
+          try {
+            var p = bowVideo.play();
+            if (p && p.catch) p.catch(function () { /* 没喊动，看守下一轮再喊 */ });
+          } catch (e) { /* 同上 */ }
         }
+        /* 看守：没播到片尾不许收场。视频停住（paused）或进度 3 秒没往前走，
+           就再喊一次 play()，让它从停住的地方自己接着往下走，三拜一拜不少；
+           磨过 45 秒还播不完才收场，免得把人一直锁死在这一拜里 */
         function bowGuardTick() {
           if (!bowing) return;
           bowTick(); /* 顺带把磬声和按钮字补上 */
-          if (!bowPlaying || bowVideo.ended || bowVideo.seeking) return;
+          if (Date.now() > bowDeadline) { bowFinish(); return; }
+          if (bowVideo.ended || bowVideo.seeking) return;
           var dur = bowVideo.duration || 11.88;
-          if (bowVideo.currentTime >= dur - 0.4) return; /* 已到片尾，交给 ended 收尾 */
-          if (bowVideo.paused || Date.now() - bowLastAdvance > 2500) bowResume();
+          if (bowVideo.currentTime >= dur - 0.35) return; /* 已到片尾，交给 ended 收尾 */
+          var now = Date.now();
+          if ((bowVideo.paused || now - bowLastAdvance > 3000) && now - bowLastPlayTry > 800) {
+            if (now - bowLastAdvance > 3000) bowLastAdvance = now; /* 喊过一轮就歇一轮，别连着猛喊 */
+            bowPlay();
+          }
         }
         function bowEnded() {
           if (!bowing) return;
           var dur = bowVideo.duration || 0;
-          /* ended 来得蹊跷：进度离片尾还远，是半路被掐停的——接续，不收场 */
-          if (dur && bowVideo.currentTime < dur - 0.35 && bowRecoveries < 5) { bowResume(); return; }
+          /* ended 来得蹊跷：进度离片尾还远，是半路假报的——回到断点接着播，不收场 */
+          if (dur && bowVideo.currentTime < dur - 0.35 && bowEarlyEnds < 3) {
+            bowEarlyEnds += 1;
+            try { bowVideo.currentTime = Math.max(0, bowLastT); } catch (e) { /* 进度还没落定也不拦着续播 */ }
+            bowPlay();
+            return;
+          }
           bowFinish();
         }
-        /* 封面就是视频第一帧的完整画面（小沙弥和佛祖、供桌都在里面），点下去立刻看到的就是它；
-           一直盖到第一帧真正显示到屏幕上才淡出——不在 'playing' 事件就提前撤，
-           点播到第一帧之间不露任何空白底色，第一帧接上时也不闪、不换景 */
+        /* 封面就是视频第一帧的完整画面（小沙弥和佛祖、供桌都在里面），点下去立刻看到的就是它。
+           淡出时机不吊死在某一个事件上：帧回调、进度事件、开播后的短计时，哪个先到都行——
+           以前只等帧回调，某些手机浏览器一直不回调，封面就永远盖着，
+           视频在底下播也看不见，等于一次都没拜。封面与第一帧是同一幅画，
+           哪个时机淡出都严丝合缝，不闪、不换景 */
         function showBowFrame() {
           if (bowFrameShown || !bowing) return;
-          if (bowVideo.seeking) { requestAnimationFrame(showBowFrame); return; } /* 还在回跳到开头：等落定 */
           bowFrameShown = true;
           bowPoster.classList.add("gone");
         }
         bowVideo.addEventListener("playing", function () {
-          bowPlaying = true;
           bowLastAdvance = Date.now();
-          if (bowFrameShown) return;
           if (bowVideo.requestVideoFrameCallback) {
             bowVideo.requestVideoFrameCallback(function () { showBowFrame(); });
-          } else {
-            requestAnimationFrame(function () { requestAnimationFrame(showBowFrame); });
           }
+          setTimeout(showBowFrame, 450); /* 帧回调迟迟不来，计时到了也撤封面 */
         });
-        bowVideo.addEventListener("timeupdate", bowTick); /* rAF 被节流时的兜底：磬声照样按进度敲 */
+        bowVideo.addEventListener("timeupdate", function () {
+          bowTick(); /* rAF 被节流时的兜底：磬声照样按进度敲 */
+          if (bowVideo.currentTime > 0.05) showBowFrame(); /* 进度动了，画面必定已经出来 */
+        });
         bowVideo.addEventListener("ended", bowEnded);
         bowVideo.addEventListener("error", function () {
           if (!bowing) return;
           var dur = bowVideo.duration || 0;
-          /* 半路出错同样不收场：重新加载，从断点接着播完三拜 */
-          if (dur && bowVideo.currentTime < dur - 0.35 && bowRecoveries < 5) {
+          /* 半路出错同样不收场：重新加载，回到断点接着播完三拜 */
+          if (dur && bowVideo.currentTime < dur - 0.35 && bowEarlyEnds < 3) {
+            bowEarlyEnds += 1;
             bowVideo.load();
             bowVideo.addEventListener("loadedmetadata", function onMeta() {
               bowVideo.removeEventListener("loadedmetadata", onMeta);
-              bowResume();
+              try { bowVideo.currentTime = Math.max(0, bowLastT); } catch (e) { /* 还没落定也不拦着续播 */ }
+              bowPlay();
             });
           } else {
             bowFinish();
@@ -1219,41 +1235,23 @@
           bowStage = 0;
           bowChimed = [false, false, false];
           bowFrameShown = false;
-          bowPlaying = false;
           bowLastT = 0;
           bowLastAdvance = Date.now();
-          bowRecoveries = 0;
+          bowLastPlayTry = 0;
+          bowEarlyEnds = 0;
+          bowDeadline = Date.now() + 45000;
           if (bowGuard) clearInterval(bowGuard);
-          bowGuard = setInterval(bowGuardTick, 500); /* 看守上岗：三拜没播完不许收场 */
+          bowGuard = setInterval(bowGuardTick, 400); /* 看守上岗：三拜没播完不许收场 */
           bowPoster.classList.remove("gone"); /* 先把封面盖稳，等第一帧真正显示出来再淡出 */
           cancelAnimationFrame(bowRaf);
           bowRaf = requestAnimationFrame(bowWatch);
           var btn = this;
           btn.disabled = true;
           btn.textContent = "一拜…";
-          var started = false;
-          function startBow() {
-            if (started || !bowing) return;
-            started = true;
-            try { bowVideo.currentTime = 0; } catch (e) { /* 还没加载完也不拦着播 */ }
-            var p = bowVideo.play();
-            if (p && p.catch) {
-              p.catch(function () {
-                /* 播放被打断时再试一次；还不行就交给看守反复拉起来，直到三拜播完——不让这一拜落空，也不假装礼成 */
-                var p2 = bowVideo.play();
-                if (p2 && p2.catch) p2.catch(function () { bowPlaying = true; bowLastAdvance = 0; });
-                else if (!p2) { bowPlaying = true; bowLastAdvance = 0; }
-              });
-            }
-          }
-          if (bowVideo.readyState >= 1) {
-            startBow();
-          } else {
-            /* 视频还没加载到位：先等它能播了再起势，保证点一下就动 */
-            bowVideo.addEventListener("loadedmetadata", startBow);
-            bowVideo.load();
-            setTimeout(startBow, 1500); /* 兜底：等太久也尝试直接播 */
-          }
+          /* 回到开头当场起播：不在事件回调里攒着等——等来等去容易把起播拖出问题；
+             数据真还没到，play() 会等它到了自己起，看守也会补喊 */
+          try { bowVideo.currentTime = 0; } catch (e) { /* 还没加载完也不拦着播 */ }
+          bowPlay();
         });
 
         /* ============ 撞钟 ============ */
