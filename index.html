@@ -483,6 +483,36 @@
         text-align: left;
         word-break: break-all;
       }
+      /* ---------- 与 Muse 对坐 ---------- */
+      .chat-log {
+        max-width: 640px; margin: 0 auto 14px;
+        background: var(--surface);
+        border: 1px solid var(--line); border-radius: 12px;
+        padding: 18px 18px 12px;
+        max-height: 380px; overflow-y: auto;
+        text-align: left;
+      }
+      .chat-empty { color: var(--ink-soft); font-size: 14.5px; text-align: center; margin: 8px 0; }
+      .chat-msg { margin: 0 0 14px; }
+      .chat-who { font-size: 12px; letter-spacing: .18em; color: var(--gold); font-weight: 700; }
+      .chat-msg.muse .chat-who { color: var(--vermillion); }
+      .chat-text { margin-top: 2px; font-size: 15px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+      .chat-time { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+      .chat-form {
+        max-width: 640px; margin: 0 auto 10px;
+        display: flex; gap: 10px; flex-wrap: wrap;
+      }
+      .chat-form input {
+        flex: 1; min-width: 0;
+        border: 1px solid var(--line); border-radius: 999px;
+        background: var(--surface); color: var(--ink);
+        padding: 10px 18px; font-size: 15px;
+        outline: none;
+      }
+      .chat-form input:focus { border-color: var(--gold); }
+      .chat-notes { max-width: 640px; margin: 0 auto 26px; text-align: center; }
+      .chat-notes p { margin: 0; font-size: 13px; color: var(--ink-soft); }
+      .chat-notes .chat-offline { color: var(--vermillion); margin-top: 2px; }
       @keyframes sway { from { transform: rotate(-1.6deg); } to { transform: rotate(1.6deg); } }
       .plaque:nth-child(2n) { animation-delay: -1.8s; }
       .plaque:nth-child(3n) { animation-delay: -3.4s; }
@@ -697,6 +727,24 @@
           <p class="wish-offline" id="wishOffline">现在连不上共享墙，心愿先只保存在这台设备上；联网后会自动切回共享。</p>
         </div>
         <div class="wish-wall" id="wishWall"></div>
+      </section>
+
+      <!-- 与 Muse 对坐 -->
+      <section id="chat">
+        <div class="sec-head">
+          <span class="seal">对坐</span>
+          <h2>与 Muse 对坐</h2>
+          <p>坐下来，慢慢说。Muse 每隔几分钟会来回你一句。</p>
+        </div>
+        <div class="chat-log" id="chatLog" aria-live="polite"></div>
+        <form class="chat-form" id="chatForm">
+          <input id="chatInput" type="text" maxlength="500" placeholder="想说什么，就写下来" autocomplete="off" />
+          <button class="btn" type="submit">说与 Muse 听</button>
+        </form>
+        <div class="chat-notes">
+          <p>这里说的话，所有来访的人都看得见——私事请回 Muse 里说。</p>
+          <p class="chat-offline" id="chatOffline" hidden>对坐还没接通，请稍后再来。</p>
+        </div>
       </section>
 
       <!-- 功德簿 -->
@@ -1517,6 +1565,77 @@
             renderLocalWall();
             toast("心愿挂好了，先留在这台设备上。联网后，墙会切回全网共享。");
           }
+        });
+
+        /* ============ 与 Muse 对坐：消息走 /temple_chat，全网公开可见 ============ */
+        var chatRef = null, chatConnected = false;
+        function renderChat(msgs) {
+          var log = $("chatLog");
+          log.innerHTML = "";
+          if (!msgs.length) {
+            var p = document.createElement("p");
+            p.className = "chat-empty";
+            p.textContent = "还没有人开口——第一句，由你来说。";
+            log.appendChild(p);
+            return;
+          }
+          msgs.forEach(function (m) {
+            var wrap = document.createElement("div");
+            wrap.className = "chat-msg" + (m.sender === "muse" ? " muse" : "");
+            var who = document.createElement("div");
+            who.className = "chat-who";
+            who.textContent = m.sender === "muse" ? "M U S E" : "来 访 者";
+            var tx = document.createElement("div");
+            tx.className = "chat-text";
+            tx.textContent = m.text;
+            var tm = document.createElement("div");
+            tm.className = "chat-time";
+            tm.textContent = fmtClock(m.time);
+            wrap.appendChild(who); wrap.appendChild(tx); wrap.appendChild(tm);
+            log.appendChild(wrap);
+          });
+          log.scrollTop = log.scrollHeight;
+        }
+        function setChatMode(on) {
+          chatConnected = on;
+          $("chatOffline").hidden = on;
+          $("chatInput").disabled = !on;
+          var btn = document.querySelector("#chatForm .btn");
+          if (btn) btn.disabled = !on;
+        }
+        renderChat([]);
+        setChatMode(false); /* 先按未接通：等数据库真正连上再开 */
+        if (db) {
+          try {
+            chatRef = db.ref("temple_chat");
+            chatRef.orderByChild("time").limitToLast(50).on("value", function (snap) {
+              var arr = [];
+              snap.forEach(function (child) {
+                var v = child.val() || {};
+                if (typeof v.text === "string" && v.text && (v.sender === "user" || v.sender === "muse")) {
+                  arr.push({ key: child.key, text: v.text, sender: v.sender, time: v.time || 0 });
+                }
+              });
+              arr.sort(function (a, b) { return a.time - b.time; });
+              renderChat(arr);
+              setChatMode(true);
+            }, function (err) {
+              /* 数据库规则没放行 temple_chat 时走这里：保持未接通 */
+              setChatMode(false);
+            });
+          } catch (err) { chatRef = null; setChatMode(false); }
+        }
+        $("chatForm").addEventListener("submit", function (e) {
+          e.preventDefault();
+          var input = $("chatInput");
+          var v = input.value.trim();
+          if (!v) { toast("先写一句，再说与 Muse 听。"); return; }
+          if (v.length > 500) v = v.slice(0, 500);
+          if (!chatConnected || !chatRef) { toast("对坐还没接通，请稍后再来。"); return; }
+          input.value = "";
+          chatRef.push().set({ text: v, sender: "user", time: Date.now() }).catch(function () {
+            toast("这句话没能送出去，请稍后再试一次。");
+          });
         });
 
         /* ============ 打开页面：把存档摆回原处 ============ */
